@@ -1,0 +1,171 @@
+---
+title: "Haberman Dataset: Classification Algorithm Comparison"
+author: "Misra Sonam"
+date: "3/22/2020"
+output: html_document
+---
+
+```{r include=FALSE}
+library(caret)
+library(klaR)
+library(neuralnet)
+library(adabag)
+library(rpart) 
+library(randomForest)
+library(caretEnsemble)
+```
+
+## Input Data
+
+```{r}
+haberman.df <- read.csv("/Users/sonam/Downloads/haberman .csv")
+head(haberman.df)
+haberman.df$Survival_Status <- as.factor(haberman.df$Survival_Status)
+```
+
+## To check data imbalance
+
+
+```{r}
+table(haberman.df$Survival_Status)
+```
+
+## Data Partitioning
+
+```{r}
+set.seed(111)
+train.index <- sample(c(1:dim(haberman.df)[1]), dim(haberman.df)[1]*0.6)
+train.df <- haberman.df[train.index, ]
+valid.df <- haberman.df[-train.index, ]
+str(train.df)
+str(valid.df)
+```
+
+## KNN Algorithm
+
+```{r}
+#normalize value
+norm.values <- preProcess(train.df[,1:2], method = c("center","scale"))
+train.norm.df <- predict(norm.values, train.df[,-3])
+valid.norm.df <- predict(norm.values, valid.df[,-3])
+
+#to choose the value of k
+sqrt(dim(haberman.df)[1])
+
+#k=17 best accuracy
+
+knn.pred <- class::knn(train = train.norm.df, 
+                       test = valid.norm.df, 
+                       cl = train.df[,3], k = 17)
+cm_knn <- confusionMatrix(knn.pred, as.factor(valid.df[, 3]), positive = "2")
+
+#k=15 best accuracy
+knn.pred <- class::knn(train = train.norm.df,
+                       test = valid.norm.df,
+                       cl = train.df[,3], k = 15)
+confusionMatrix(knn.pred, as.factor(valid.df[, 3]))
+
+#k=20 best accuracy
+knn.pred <- class::knn(train = train.norm.df,
+                       test = valid.norm.df,
+                       cl = train.df[,3], k = 20)
+confusionMatrix(knn.pred, as.factor(valid.df[, 3]))
+
+# k-17 was best choice here
+```
+
+## Single Decision Tree
+
+```{r}
+rt <- rpart(Survival_Status ~ ., data = train.df, method = "class" )
+pred <- predict(rt, valid.df, type = "class")
+cm_rpart <- confusionMatrix(as.factor(pred), (valid.df$Survival_Status), positive = "2")
+cm_rpart
+```
+
+## Logistic Regression
+
+```{r}
+lm.fit <- glm(as.factor(train.df$Survival_Status) ~ ., data = train.df, family = "binomial")
+summary(lm.fit)
+
+# evaluate
+
+glm.probs <- predict(lm.fit,
+                     newdata = valid.df,
+                     type = "response")
+
+glm.pred <- ifelse(glm.probs > 0.5, "2", "1")
+
+cm_glm <- confusionMatrix(as.factor(glm.pred), (valid.df$Survival_Status),positive = "2" )
+cm_glm
+```
+
+## Random Forest
+
+```{r include=FALSE}
+#mtry=4
+
+rf <- randomForest(Survival_Status ~ ., data = train.df,mtry=4, method = "class")
+pred <- predict(rf, valid.df, type = "class")
+cm_rf <- confusionMatrix(as.factor(pred),(valid.df$Survival_Status), positive = "2")
+cm_rf
+```
+
+## Model Comparison
+
+```{r}
+model_compare <- data.frame(Model = c('KNN',
+                                      'Decision Tree',
+                                      'GLM',
+                                      'Random Forest'),
+                            Accuracy = c(cm_knn$overall[1],
+                                         cm_rpart$overall[1],
+                                         cm_glm$overall[1],
+                                         cm_rf$overall[1]))
+
+ggplot(aes(x=Model, y=Accuracy), data=model_compare) +
+  geom_bar(stat='identity', fill = 'blue') +
+  ggtitle('Comparative Accuracy of Models') +
+  xlab('Models') +
+  ylab('Overall Accuracy')
+```
+
+## Ensemble Method using CaretStack and CaretList
+```{r results='hide', message=FALSE}
+# Create a new variable for workers
+train.df$Survival_Status <- as.factor(train.df$Survival_Status)
+train.df$Survival_Status <- as.factor(make.names(train.df$Survival_Status))
+
+
+# Model to predict workers 
+control <- trainControl(method = "repeatedcv", number = 5, repeats = 3, search = "grid", savePredictions = "final", index = createResample(train.df$Survival_Status, 10), classProbs = TRUE, verboseIter = TRUE)
+
+# List of algorithms to use in ensemble
+alg_list <- c("rf", "rpart", "glm", "knn")
+
+multi_mod <- caretList(Survival_Status ~ . , data = train.df, trControl = control, methodList = alg_list)
+
+
+
+# Stack 
+stackControl <- trainControl(method = "repeatedcv", number = 5, repeats = 3, savePredictions = TRUE, classProbs = TRUE, verboseIter = TRUE)
+
+stack <- caretStack(multi_mod, method = "rf", metric = "Accuracy", trControl = stackControl)
+
+# Predict
+stack_val_preds <- predict(stack, valid.df, type = "prob")
+stack_val_preds
+
+stack.pred <- ifelse(stack_val_preds > 0.5, "2", "1")
+
+```
+```{r}
+# Results
+res <- resamples(multi_mod)
+summary(res)
+dotplot(res)
+
+confusionMatrix(as.factor(stack.pred), as.factor(valid.df$Survival_Status),positive = "2" )
+```
+
